@@ -1,0 +1,15 @@
+[package]
+name = "contagion"
+version = "0.1.0"
+authors = ["MontrealMike <michael.bleau@mbetassocies.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "0.7.3"
+rand_distr = "0.2.2"
+csv = "1.1.3"
+serde = { version = "1.0", features = ["derive"] }
+yaml-rust = "0.4"
+regex-automata = "0.1.9"

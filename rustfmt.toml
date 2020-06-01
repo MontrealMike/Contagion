@@ -1,0 +1,6 @@
+max_width = 100
+enum_discrim_align_threshold = 20
+struct_field_align_threshold = 20
+indent_style = "Visual"
+binop_separator = "Back"
+
