@@ -256,7 +256,8 @@ impl FromStr for SensitivityVariable {
             "mobility" => Ok(SensitivityVariable::Mobility),
             "exposure" => Ok(SensitivityVariable::Exposure),
             "compliability" => Ok(SensitivityVariable::Compliability),
-            "immunity_loss_rate" => Ok(SensitivityVariable::ImmunityLossRate),
+            "immunity_loss_rate" => Ok(SensitivityVariable::ImmunityLossRate), // deprecated
+            "immunity_loss" => Ok(SensitivityVariable::ImmunityLossRate),
             "vulnerability" => Ok(SensitivityVariable::Vulnerability),
             "days_infected" => Ok(SensitivityVariable::DaysInfected),
             "days_symptomatic" => Ok(SensitivityVariable::DaysSymptomatic),
@@ -426,74 +427,19 @@ impl Iterator for ModelParameters {
 
 // ----------------------------- Output model results ------------------------------------------------------
 pub struct PersonLog {
-    file_path_create: String,
-    file_path_move: String,
-    file_path_disease: String,
+    file_path_create: PathBuf,
+    file_path_move: PathBuf,
+    file_path_disease: PathBuf,
+    file_path_test: PathBuf,
 }
 
 impl PersonLog {
     pub fn new(file_path_str: &str) -> PersonLog {
-        // create files and write header lines
-        let mut file_path_create = PathBuf::from(file_path_str);
-        file_path_create.push("person_log_create.csv");
-        let mut file = match File::create(&file_path_create) {
-            Err(why) => panic!("Couldn't create {} - {}", file_path_create.display(), why),
-            Ok(file) => file,
-        };
-
-        match file.write_all(
-            b"person_id,cycle,cell_id,mobility, exposure, compliability, immunity, vulnerability",
-        ) {
-            Err(why) => panic!(
-                "Couldn't write headers to {} - {}",
-                file_path_create.display(),
-                why
-            ),
-            Ok(_) => (),
-        }
-        file.sync_all()
-            .expect(&format!("Could not sync {}", file_path_create.display()));
-
-        let mut file_path_move = PathBuf::from(file_path_str);
-        file_path_move.push("person_log_move.csv");
-        let mut file = match File::create(&file_path_move) {
-            Err(why) => panic!("Couldn't create {} - {}", file_path_move.display(), why),
-            Ok(file) => file,
-        };
-
-        match file.write_all(b"person_id,cycle,from_cell_id,to_cell_id") {
-            Err(why) => panic!(
-                "Couldn't write headers to {} - {}",
-                file_path_move.display(),
-                why
-            ),
-            Ok(_) => (),
-        }
-        file.sync_all()
-            .expect(&format!("Could not sync {}", file_path_move.display()));
-
-        let mut file_path_disease = PathBuf::from(file_path_str);
-        file_path_disease.push("person_log_disease.csv");
-        let mut file = match File::create(&file_path_disease) {
-            Err(why) => panic!("Couldn't create {} - {}", file_path_disease.display(), why),
-            Ok(file) => file,
-        };
-
-        match file.write_all(b"person_id,cycle,from_cell_id,to_cell_id") {
-            Err(why) => panic!(
-                "Couldn't write headers to {} - {}",
-                file_path_disease.display(),
-                why
-            ),
-            Ok(_) => (),
-        }
-        file.sync_all()
-            .expect(&format!("Could not sync {}", file_path_disease.display()));
-
         PersonLog {
-            file_path_create: file_path_create.display().to_string(),
-            file_path_move: file_path_move.display().to_string(),
-            file_path_disease: file_path_disease.display().to_string(),
+            file_path_create: [file_path_str, "person_log_create.csv"].iter().collect(),
+            file_path_move: [file_path_str, "person_log_move.csv"].iter().collect(),
+            file_path_disease: [file_path_str, "person_log_disease.csv"].iter().collect(),
+            file_path_test: [file_path_str, "person_log_test.csv"].iter().collect(),
         }
     }
 
@@ -517,6 +463,12 @@ impl PersonLog {
             .append(false)
             .open(&self.file_path_disease)
             .unwrap();
+        let mut file_test = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(false)
+            .open(&self.file_path_test)
+            .unwrap();
 
         // write header lines
         file_create
@@ -525,19 +477,25 @@ impl PersonLog {
             )
             .expect(&format!(
                 "Could not write header to {}",
-                self.file_path_create
+                self.file_path_create.display()
             ));
         file_move
             .write_all(b"id,cycle,current_cell,to_cell\n")
             .expect(&format!(
                 "Could not write header to {}",
-                self.file_path_move
+                self.file_path_move.display()
             ));
         file_disease
             .write_all(b"id,cycle,current_cell,new_status\n")
             .expect(&format!(
                 "Could not write header to {}",
-                self.file_path_disease
+                self.file_path_disease.display()
+            ));
+        file_test
+            .write_all(b"id,cycle,current_cell,result\n")
+            .expect(&format!(
+                "Could not write header to {}",
+                self.file_path_test.display()
             ));
 
         // write log entries into appropriate file
@@ -566,7 +524,10 @@ impl PersonLog {
                                 )
                                 .as_bytes(),
                             )
-                            .expect(&format!("Could not write to {}", self.file_path_create));
+                            .expect(&format!(
+                                "Could not write to {}",
+                                self.file_path_create.display()
+                            ));
                     }
                     world::PersonEvent::Move(to_cell) => {
                         file_move
@@ -574,7 +535,10 @@ impl PersonLog {
                                 format!("{},{},{},{}\n", r.id, r.cycle, r.current_cell, to_cell,)
                                     .as_bytes(),
                             )
-                            .expect(&format!("Could not write to {}", self.file_path_move));
+                            .expect(&format!(
+                                "Could not write to {}",
+                                self.file_path_move.display()
+                            ));
                     }
                     world::PersonEvent::DiseaseStatusChange(new_status) => {
                         file_disease
@@ -582,21 +546,34 @@ impl PersonLog {
                                 format!("{},{},{},{}\n", r.id, r.cycle, r.current_cell, new_status,)
                                     .as_bytes(),
                             )
-                            .expect(&format!("Could not write to {}", self.file_path_disease));
+                            .expect(&format!("Could not write to {}", self.file_path_disease.display()));
+                    }
+                    world::PersonEvent::Test(status) => {
+                        file_disease
+                            .write_all(
+                                format!("{},{},{},{}\n", r.id, r.cycle, r.current_cell, status,)
+                                    .as_bytes(),
+                            )
+                            .expect(&format!(
+                                "Could not write to {}",
+                                self.file_path_disease.display()
+                            ));
                     }
                 }
             }
         }
 
         // flush files
-        file_create
-            .sync_all()
-            .expect(&format!("Could not sync {}", self.file_path_create));
+        file_create.sync_all().expect(&format!(
+            "Could not sync {}",
+            self.file_path_create.display()
+        ));
         file_move
             .sync_all()
-            .expect(&format!("Could not sync {}", self.file_path_move));
-        file_disease
-            .sync_all()
-            .expect(&format!("Could not sync {}", self.file_path_disease));
+            .expect(&format!("Could not sync {}", self.file_path_move.display()));
+        file_disease.sync_all().expect(&format!(
+            "Could not sync {}",
+            self.file_path_disease.display()
+        ));
     }
 }

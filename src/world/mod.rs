@@ -46,7 +46,7 @@ impl Region {
         // we also have a vector of neighbourhoods.
         //     the vector has a value for each cell
         //     that value is itself a vector of up to 8 immediate neighbours
-        //     cells on the corners and edges of the regi
+        //     cells on the corners and edges of the region have 3 and 5 neighbours respectively.
 
         // creating the vectors
         let mut populace: Vec<Person> = Vec::with_capacity(people_count);
@@ -117,7 +117,7 @@ impl Region {
 
         Region {
             populace: populace,
-            cell_home_population: cell_pops, //BUG contains empty cell pop!
+            cell_home_population: cell_pops, //BUG #5 contains empty cell pop!
             cell_virality: cell_virality,
             od_attraction_matrix: od_matrix,
             population_count: people_count,
@@ -129,7 +129,7 @@ impl Region {
     }
 
     // infection in a count number of randomly selected people
-    pub fn seed_infection(&mut self, count: usize) {
+    pub fn seed_infection(&mut self, cycle: usize, count: usize) {
         let mut rng = rand::thread_rng();
         let person_ids: Vec<usize> = (0..self.population_count).collect();
         let infectee_ids = person_ids.choose_multiple(&mut rng, count).cloned();
@@ -137,7 +137,7 @@ impl Region {
         print!("     seeding the infection ... ");
         io::stdout().flush().unwrap();
         for person_index in infectee_ids {
-            self.populace[person_index].disease_status = DiseaseStatus::Infected;
+            self.populace[person_index].update_disease_status(cycle, &self.sim_parms);
         }
         println!(" {} people infected", count);
     }
@@ -146,8 +146,7 @@ impl Region {
     // their home cell, their mobility factor
     // Only non-hospitalized alive people move
     // Cell virality levels are updated to reflect the current population
-    // TODO cell virality must consider indivisual immunity levels
-    // (TODO) add a dampening measures in on symptomatic persons
+    // (TODO) #1 add a dampening measures in on symptomatic persons
     pub fn move_people(&mut self, cycle: usize) {
         let mut cell_current_pop: Vec<usize> = vec![0; self.cell_count];
         let mut cell_tot_virality: Vec<f64> = vec![0.0; self.cell_count];
@@ -306,76 +305,6 @@ impl Cell {
     }
 }
 
-// returns a vector of up to 8 <usize>.
-// these are the indices of the immediate neighbours of cell
-// cells on the edges and corners have fewer neighbours
-//     fn neighbours_old(&self) -> Vec<usize> {
-//         let mut potential_neigbours: Vec<Option<(usize, usize)>> = Vec::with_capacity(8);
-
-//         // we will create 8 values one at a time
-//         // top row neighours
-//         if self.row_index == 0 && self.col_index == 0 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index - 1, self.col_index - 1)));
-//         }
-
-//         if self.row_index == 0 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index - 1, self.col_index)));
-//         }
-
-//         if self.row_index == 0 && self.col_index == self.col_count - 1 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index - 1, self.col_index + 1)));
-//         }
-
-//         // same row neighours
-//         if self.col_index == 0 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index, self.col_index - 1)));
-//         }
-
-//         if self.col_index == self.col_count - 1 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index, self.col_index + 1)));
-//         }
-
-//         //  bottom row neighours
-//         if self.row_index == self.row_count - 1 && self.col_index == 0 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index + 1, self.col_index - 1)));
-//         }
-
-//         if self.row_index == self.row_count - 1 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index + 1, self.col_index)));
-//         }
-
-//         if self.row_index == self.row_count - 1 && self.col_index == self.col_count - 1 {
-//             potential_neigbours.push(None);
-//         } else {
-//             potential_neigbours.push(Some((self.row_index + 1, self.col_index + 1)));
-//         }
-
-//         // now append only the valid (Some) values to the neighbours list
-//         let mut actual_neighbours: Vec<usize> = Vec::with_capacity(8);
-//         for pn in potential_neigbours {
-//             match pn {
-//                 Some(coords) => actual_neighbours.push(coords.0 * self.row_count + coords.1),
-//                 None => (),
-//             }
-//         }
-//         actual_neighbours
-//     }
-// }
-
 // Person ---------------------------------------------------------------------------------------------------
 #[derive(Debug)]
 pub struct Person {
@@ -384,14 +313,15 @@ pub struct Person {
     pub exposure: f64,
     pub compliability: f64,
     pub immunity: f64,
-    // Vulnerability: an integer from 0 to 4 describing the worst disease status they will attain if infected
-    // Infected, Symptomatic, Hospitalized, Dead
+    // Vulnerability: an integer from 0 to 4 describing the worst disease path a person will follow if infected
+    // See the update disease status function
     pub vulnerability: usize,
     pub home_cell: usize,
     pub current_cell: usize,
     pub disease_status: DiseaseStatus,
-    pub next_status_change: usize, //day on next change will occur
+    pub next_status_change: usize, //cycle on which on next change will occur
     pub event_log: Vec<PersonLogEntry>,
+    pub last_test: Option<(bool, usize)>, // test result, test cycle
 }
 
 impl Person {
@@ -421,6 +351,7 @@ impl Person {
             disease_status: DiseaseStatus::Well,
             next_status_change: 0,
             event_log: event_log,
+            last_test: None,
         }
     }
 
@@ -435,7 +366,7 @@ impl Person {
     }
 
     // update disease status
-    // each pereson has a randomly assigned vulvnerability level which predetermines the path in disease progression
+    // each person has a randomly assigned vulnerability level which predetermines the path in disease progression
     // there are 5 vulnerability levels can be 0,1,2,3,4
     // using the code W-Well, I-Infected, S-Symptomatic, H-Hospitalized, D-Dead the paths are
     //    0: W>I>W
@@ -508,14 +439,38 @@ impl Person {
         }
         new_status.0
     }
+
+    // test to see if infected
+    // sim parameters determine test reliability
+    //      result may be accurate or
+    //      false positive or
+    //      false negative
+    fn infection_test(&mut self, cycle: usize, parms: &SimParms) {
+        // naive version - perfect test TODO #4 - put in errors
+        let is_infected: bool = if self.disease_status == DiseaseStatus::Well {
+            true
+        } else {
+            false
+        };
+
+        self.last_test = Some((is_infected, cycle));
+        self.event_log.push(PersonLogEntry {
+            id: self.id,
+            cycle: cycle,
+            current_cell: self.current_cell,
+            event: PersonEvent::Test(is_infected),
+        });
+    }
 }
 
 #[derive(Debug, Copy, Clone, Serialize)]
 pub enum PersonEvent {
     Create(f64, f64, f64, f64, usize), // mobility, exposure, compliability, immunity, vulnerability
     Move(usize),                       // to_cell index
-    DiseaseStatusChange(DiseaseStatus), // mew disease status
+    DiseaseStatusChange(DiseaseStatus), // new disease status
+    Test(bool),                        // test with status result
 }
+
 #[derive(Debug, Copy, Clone, Serialize)]
 pub struct PersonLogEntry {
     pub id: usize,

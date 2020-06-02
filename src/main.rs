@@ -41,10 +41,10 @@ fn main() {
         let person_log = data_management::PersonLog::new(&scenario_dir_name);
         let mut world = create_world(model_scenario);
 
-        world.seed_infection(10);
+        world.seed_infection(0, 10); // infect 10 people
 
         // Loop around cycles
-        // TODO add timer
+        // TODO #3 add timer
         print!("Running {} cycles", cycle_ceiling - 1);
         for cycle in 1..cycle_ceiling {
             world.move_people(cycle);
