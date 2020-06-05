@@ -26,7 +26,7 @@ fn main() {
         model_parms.cycles
     );
     let cycle_ceiling = model_parms.cycles + 1; // cycles are 1 - based
-    let mut scenario_number = 0; // scenario counter TODO make part of iterator
+    let mut scenario_number = 0; // scenario counter TODO #7 make part of iterator
 
     // loop around scenarios
     for model_scenario in model_parms {
@@ -72,7 +72,7 @@ fn create_world(parms: world::WorldParms) -> world::Region {
     )
 }
 
-// TODO this whole person log thing is quite askward - why can't it be created within this
+// TODO #6 this whole person log thing is quite awkward - why can't it be created within this
 // function
 fn save_person_logs(populace: &Vec<world::Person>, person_log_file: &data_management::PersonLog) {
     // create a vector of vector of personal logs

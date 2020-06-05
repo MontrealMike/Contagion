@@ -7,6 +7,8 @@
 // the world is defined as a grid of cells (called a region)
 // each cell contains a populace
 //
+// In each cycle - people move, change their disease status, get tested
+//
 ////////////////////////////////////////////////////////////////////////////////////
 
 use rand::prelude::*;
@@ -18,10 +20,11 @@ use std::io::{self, Write};
 
 // Region ---------------------------------------------------------------------------------------------------
 #[derive(Debug)]
-pub struct Region {
-    pub populace: Vec<Person>,
+pub struct Region<'a> {
+    // pub populace: Vec<Person>,
+    cells: Vec<Cell<'a>>,
     cell_home_population: Vec<usize>,
-    cell_virality: Vec<f64>,
+    // cell_virality: Vec<f64>,
     od_attraction_matrix: Vec<Vec<f64>>,
     population_count: usize,
     cell_count: usize,
@@ -30,42 +33,43 @@ pub struct Region {
     sim_parms: SimParms,
 }
 
-impl Region {
+impl<'a> Region<'a> {
     pub fn new(
         row_count: usize,
         col_count: usize,
         people_count: usize,
         empty_pop_pull_factor: usize,
+        initial_infected_count: usize,
         sim_parms: SimParms,
-    ) -> Region {
+    ) -> Region<'a> {
+        // creating the cells
         let cell_count = row_count * col_count;
+        let mut cells: Vec<Cell> = Vec::with_capacity(cell_count);
+        for cell_index in 0..cell_count {
+            cells.push(Cell::new(cell_index));
+        }
 
-        // let's figure out the population of each cell and store it in cell_pop vector
-        //     the vector has a value for each cell
-        //     the initial value of the vector controls the degree of pull each cell will have on new people
-        // we also have a vector of neighbourhoods.
-        //     the vector has a value for each cell
-        //     that value is itself a vector of up to 8 immediate neighbours
-        //     cells on the corners and edges of the region have 3 and 5 neighbours respectively.
-
-        // creating the vectors
-        let mut populace: Vec<Person> = Vec::with_capacity(people_count);
-        let mut cell_pops: Vec<usize> = vec![0; cell_count];
+        // populating the cells
+        // let mut cell_pops: Vec<usize> = vec![0; cell_count];
         let mut neighbourhoods: Vec<Vec<usize>> = Vec::with_capacity(cell_count);
         let mut neighbourhood_pops: Vec<usize> = vec![empty_pop_pull_factor; cell_count];
-        let cell_virality: Vec<f64> = vec![0.0; cell_count];
 
         // populate neighbourhood vector and initialize neighbourhood populations
         print!("     creating neighbourhoods ...");
         io::stdout().flush().unwrap();
         for index in 0..cell_count {
-            let neighbours = Cell::new(index, row_count, col_count).neighbours();
-            // for n in &neighbours {
-            //     neighbourhood_pops[index] += cell_pops[*n] + cell_pops[index];
-            // }
+            let neighbours = CellAddress::new(index, row_count, col_count).neighbours();
             neighbourhoods.push(neighbours);
         }
         println!(" {} created", neighbourhoods.len());
+
+        // randomly pick those who are infected at the outset
+        let mut rng = rand::thread_rng();
+        let person_ids: Vec<usize> = (0..people_count).collect();
+        let infectee_ids: Vec<usize> = person_ids
+            .choose_multiple(&mut rng, initial_infected_count)
+            .cloned()
+            .collect();
 
         // randomly spread people into cells - cells with people attract more people
         print!("     creating people ...");
@@ -74,15 +78,22 @@ impl Region {
         for p in 0..people_count {
             let wi = rand::distributions::WeightedIndex::new(&neighbourhood_pops).unwrap();
             let cell_choice = wi.sample(&mut rng);
-            cell_pops[cell_choice] += 1;
+            // cell_pops[cell_choice] += 1;
             for neighbour in &neighbourhoods[cell_choice] {
                 neighbourhood_pops[*neighbour] += 1;
             }
-            populace.push(Person::new(p, &sim_parms, cell_choice));
+            let new_person = Person::new(p, &sim_parms, cell_choice);
+            if infectee_ids.len() > 0 {
+                if p == infectee_ids[0] {
+                    new_person.update_disease_status(0, &sim_parms);
+                    print!("i")
+                }
+            }
+            cells[cell_choice].add_resident(new_person);
         }
-        println!("   {} people created", populace.len());
+        println!("   {} people created", people_count);
 
-        // create od attraction matrix - based on distances home populations
+        // create od attraction matrix - based on distances & home populations
         // so it can be calculated ahead of time since they are fixed
         print!("     creating od matrix ...");
         io::stdout().flush().unwrap();
@@ -101,8 +112,8 @@ impl Region {
                         (to_row as f64 - from_row as f64).powi(2)
                             + (to_col as f64 - from_col as f64).powi(2)
                     };
-                    ((cell_pops[from_index] * cell_pops[to_index]) + 1) as f64 / distance_sq as f64
-                // magic number 1 to endure non-zero
+                    ((cells[from_index].resident_pop() * cells[to_index].resident_pop()) + 1) as f64
+                        / distance_sq as f64 // magic number 1 to endure non-zero
                 } else {
                     od_matrix[to_index][from_index] //get the value on the other side of the diagonal
                 };
@@ -116,9 +127,10 @@ impl Region {
         );
 
         Region {
-            populace: populace,
-            cell_home_population: cell_pops, //BUG #5 contains empty cell pop!
-            cell_virality: cell_virality,
+            // populace: populace,
+            cells: cells,
+            // cell_home_population: cell_pops, //BUG #5 contains empty cell pop!
+            // cell_virality: cell_virality,
             od_attraction_matrix: od_matrix,
             population_count: people_count,
             cell_count: cell_count,
@@ -129,18 +141,19 @@ impl Region {
     }
 
     // infection in a count number of randomly selected people
-    pub fn seed_infection(&mut self, cycle: usize, count: usize) {
-        let mut rng = rand::thread_rng();
-        let person_ids: Vec<usize> = (0..self.population_count).collect();
-        let infectee_ids = person_ids.choose_multiple(&mut rng, count).cloned();
+    // pub fn seed_infection(&mut self, cycle: usize, count: usize) {
+    //     let mut rng = rand::thread_rng();
+    //     let person_ids: Vec<usize> = (0..self.population_count).collect();
+    //     let infectee_ids = person_ids.choose_multiple(&mut rng, count).cloned();
 
-        print!("     seeding the infection ... ");
-        io::stdout().flush().unwrap();
-        for person_index in infectee_ids {
-            self.populace[person_index].update_disease_status(cycle, &self.sim_parms);
-        }
-        println!(" {} people infected", count);
-    }
+    //     print!("     seeding the infection ... ");
+    //     io::stdout().flush().unwrap();
+    //     let person_count: usize = 0;
+    //     for person_index in infectee_ids {
+    //         self.populace[person_index].update_disease_status(cycle, &self.sim_parms);
+    //     }
+    //     println!(" {} people infected", count);
+    // }
 
     // Moves people from one cell to another based on their current location,
     // their home cell, their mobility factor
@@ -153,38 +166,42 @@ impl Region {
         let mut rng = rand::thread_rng();
 
         // we have an arrivals and departures row for each cell
-        for person in self.populace.iter_mut() {
-            // more mobile people at home tend to move away more
-            // less mobile people away tend to return home more
-            let will_move = if person.disease_status == DiseaseStatus::Hospitalized
-                || person.disease_status == DiseaseStatus::Dead
-            {
-                false
-            } else {
-                if person.current_cell == person.home_cell {
-                    person.mobility > rng.gen::<f64>()
+        for cell in self.cells {
+            for person in cell.populace.iter_mut() {
+                // more mobile people at home tend to move away more
+                // less mobile people away tend to return home more
+                let will_move = if person.disease_status == DiseaseStatus::Hospitalized
+                    || person.disease_status == DiseaseStatus::Dead
+                {
+                    false
                 } else {
-                    person.mobility <= rng.gen::<f64>()
+                    if person.current_cell == person.home_cell {
+                        person.mobility > rng.gen::<f64>()
+                    } else {
+                        person.mobility <= rng.gen::<f64>()
+                    }
+                };
+
+                if will_move {
+                    // use the attraction row from the person's home cell
+                    let wi = rand::distributions::WeightedIndex::new(
+                        &self.od_attraction_matrix[person.home_cell],
+                    )
+                    .unwrap();
+                    let to_cell_index = wi.sample(&mut rng);
+                    person.relocate(cycle, to_cell_index);
                 }
-            };
 
-            if will_move {
-                // use the attraction row from the person's home cell
-                let wi = rand::distributions::WeightedIndex::new(
-                    &self.od_attraction_matrix[person.home_cell],
-                )
-                .unwrap();
-                let to_cell_index = wi.sample(&mut rng);
-                person.relocate(cycle, to_cell_index);
+                // cumulate virality levels
+                cell_current_pop[person.current_cell] += 1;
+                if person.disease_status == DiseaseStatus::Infected
+                    || person.disease_status == DiseaseStatus::Symptomatic
+                {
+                    cell_tot_virality[person.current_cell] +=
+                        person.exposure * (1.0 - person.immunity);
+                }
             }
-
-            // cumulate virality levels
-            cell_current_pop[person.current_cell] += 1;
-            if person.disease_status == DiseaseStatus::Infected
-                || person.disease_status == DiseaseStatus::Symptomatic
-            {
-                cell_tot_virality[person.current_cell] += person.exposure * (1.0 - person.immunity);
-            }
+            // update cell virality
         }
 
         // function yields virality score between 0 and 1.
@@ -213,23 +230,90 @@ impl Region {
     }
 }
 
+// cell
+#[derive(Debug)]
+struct Cell<'a> {
+    id: usize,
+    populace: Vec<Person>,
+    // neighbours: Vec<Cell<'a>>,
+    resident_pop: usize,     // total residents  including away
+    at_home_pop: usize,      // residents currently at home
+    visitor_pop: usize,      // visitors
+    testing_capacity: usize, // people per cycle
+}
+
+impl<'a> Cell<'a> {
+    fn new(id: usize) -> Cell<'a> {
+        let populace: Vec<Person> = Vec::new();
+        // let neighbours: Vec<Cell> = Vec::new();
+        // let at_home_pop = 0;
+        // let testing_capacity = 0;
+        Cell {
+            id: id,
+            populace: populace,
+            resident_pop: 0,
+            at_home_pop: 0,
+            visitor_pop: 0,
+            // neighbours: neighbours,
+            testing_capacity: 0,
+        }
+    }
+
+    fn resident_pop(&self) -> usize {
+        self.resident_pop
+    }
+    fn visitor_pop(&self) -> usize {
+        self.visitor_pop
+    }
+    fn at_home_pop(&self) -> usize {
+        self.at_home_pop
+    }
+    fn away_pop(&self) -> usize {
+        self.current_pop() - self.visitor_pop() - self.at_home_pop()
+    }
+    fn current_pop(&self) -> usize {
+        self.populace.len()
+    }
+
+    // use this only to initialize cell pop
+    fn add_resident(&self, p: person) {
+        assert_eq!(self.id, person.home_cell);
+        self.resident_pop += 1;
+        self.add_person(p);
+    }
+    fn add_person(&self, p: Person) {
+        match p.home_cell == self.id {
+            true => self.at_home_pop += 1,
+            false => self.visitor_pop += 1,
+        }
+        self.populace.push(p);
+    }
+    fn remove_person(&self, index: usize) -> Person {
+        match p.home_cell == self.id {
+            true => self.at_home_pop -= 1,
+            false => self.visitor_pop -= 1,
+        }
+        self.populace.remove(index)
+    }
+}
+
 // implements a 2D cell from a 1D index and row count
-struct Cell {
+struct CellAddress {
     row_count: usize,
     col_count: usize,
     row_index: usize,
     col_index: usize,
 }
 
-impl Cell {
-    fn new(index: usize, row_count: usize, col_count: usize) -> Cell {
+impl CellAddress {
+    fn new(index: usize, row_count: usize, col_count: usize) -> CellAddress {
         assert!(
             index < row_count * col_count,
             "Cell index {} >= max {}",
             index,
             row_count * col_count
         );
-        Cell {
+        CellAddress {
             row_count: row_count,
             col_count: col_count,
             row_index: index / col_count,
