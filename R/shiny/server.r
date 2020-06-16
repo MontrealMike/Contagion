@@ -12,14 +12,12 @@ library(scales)
 prepare_rdata(model_root_dir())
 server <- function(input, output, session) {
 
-  
   # model selection and parms ------------------------------------------------------  
   # update scenario list drop_down based on model selection
   observeEvent (input$m_model_selection, {
     scenario_choices = scenario_list(input$m_model_selection)
     updateSelectizeInput(session, "s_scenario_selection", choices = scenario_choices)
   })
-  
   
   model_parms <- reactive({
     print(paste0("Reading model parms ", input$m_model_selection))
@@ -30,7 +28,6 @@ server <- function(input, output, session) {
     # print(model_parameters(input$m_model_selection))
     model_parameters(input$m_model_selection)
   })
-  
   
   output$m_model_desc_parms <- renderTable(model_parm_tables()$model_desc_parms, colnames = F)
   output$m_world_parms <- renderTable(model_parm_tables()$world_parms, colnames = F)
@@ -193,28 +190,28 @@ server <- function(input, output, session) {
 
   # population status changes -----------------------------------------------------------
   output$s_cycle_pop_changes <- reactive(({
-    # print(paste0("prt  has ", nrow(scenario_data()$population_reconciliation), "rows. Cycle ", input$s_heatmap_cycle))
     table_data <- population_reconciliation_table(scenario_data()$cell_cycle_reconciliation,
                                                   input$s_heatmap_cycle)
-    kable(table_data, align = "rrrrrr") %>% 
-      kable_styling() %>% 
-      row_spec(c(1,4,10), bold = T, hline_after = T) %>% 
-      row_spec(c(3,9), hline_after = T) %>% 
-      column_spec(7, bold = T)
-    
+    # kable(table_data, align = "rrrrrr") %>% 
+    #   kable_styling() %>% 
+    #   row_spec(c(1,4,10), bold = T, hline_after = T) %>% 
+    #   row_spec(c(3,9), hline_after = T) %>% 
+    #   column_spec(7, bold = T)
+
+    kable(table_data, align = "lrrrrrr") %>% 
+      kable_styling()
   }))
   
   output$s_cell_cycle_pop_changes <- reactive(({
-    cell = input$s_status_row * model_parms()$world_parms$rows + input$s_status_col
+    cell <- input$s_status_row * model_parms()$world_parms$rows + input$s_status_col
     table_data <- population_reconciliation_table(scenario_data()$cell_cycle_reconciliation,
                                                   input$s_heatmap_cycle, cell)
-    kable(table_data, align = "rrrrrr") %>% 
-      kable_styling() %>% 
-      row_spec(c(1,4,10), bold = T, hline_after = T) %>% 
-      row_spec(c(3,9), hline_after = T) %>% 
-      column_spec(7, bold = T)
+    # kable(table_data, align = "rrrrrr") %>% 
+    #   kable_styling() %>% 
+    #   row_spec(c(1,4,10), bold = T, hline_after = T) %>% 
+    #   row_spec(c(3,9), hline_after = T) %>% 
+    #   column_spec(7, bold = T)
+    kable(table_data, align = "lrrrrrr") %>% 
+      kable_styling()
   }))
-  
-  
-  
 }

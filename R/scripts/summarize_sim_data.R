@@ -16,14 +16,16 @@ prepare_rdata <- function(model_root_dir, force = FALSE) {
   
   # world - cycle cartesian join
   world_cycles_status <- function(parms){
-    expand.grid(cycle = 0:(parms$cycles - 1), 
+    wcs <- expand.grid(cycle = 0:(parms$cycles - 1), 
                 cell = 0:(parms$world_parms$rows * parms$world_parms$cols - 1), 
                 status = disease_status_factors())
+    wcs$status <- factor(wcs$status, ordered = TRUE, disease_status_factors())
+    data.table(wcs)
   }
   
   # personal history
   person_history <- function(scenario_dir, pc) {
-    cat("   creating personal histories ... \n")
+    cat("   creating personal histories ... ")
     creations <-
       read_create_log(scenario_dir) %>%
       rename(create_cell = current_cell, create_status = disease_status) %>%
@@ -39,135 +41,145 @@ prepare_rdata <- function(model_root_dir, force = FALSE) {
     ph[, cell := ifelse(cycle == 0, create_cell, to_cell)]
     ph[, status := dsf[ifelse(cycle == 0, create_status, disease_status)]]
     ph$status <- factor(ph$status, ordered = TRUE, levels = dsf)
-    ph <- ph %>% group_by(id) %>% arrange(cycle) %>% fill(cell, status) %>%
-      select(cycle, id, cell, status) %>% ungroup()
-    ph    
+    ph <- ph %>% 
+      group_by(id) %>% 
+      arrange(cycle) %>% 
+      fill(cell, status) %>%
+      select(cycle, id, cell, status) %>% 
+      ungroup()
+    ph <- data.table(ph)
+    setkey(ph, cycle, cell, status)
     
-    # ph <-
-    #   pc %>% left_join(creations, by = c("cycle", "id")) %>%
-    #   left_join(moves, by = c("cycle", "id")) %>%
-    #   left_join(diseases, by = c("cycle", "id")) %>%
-    #   mutate(cell = ifelse(cycle == 0, create_cell, to_cell)) %>%
-    #   mutate(status = dsf[ifelse(cycle == 0, create_status, disease_status)]) %>%
-    #   group_by(id) %>% arrange(cycle) %>% fill(cell, status) %>%
-    #   select(cycle, id, cell, status) %>% ungroup()
-    # 
+    cat("done\n")
+    ph
   }
   
-  cell_cycle_reconciliation <- function(s) {
+  cell_cycle_reconciliation <- function(m, s) {
     cat("   cell cycle reconciliation ... ")
     
-    # data table are faster and more memory efficient
+    # data tables are faster and more memory efficient than tibbles
     ph <- data.table(load_scenario_data(s, "person_history"))
     setkey(ph, id, cycle)
-    ph[, next_cycle := cycle + 1]
-    ph <- ph[ph, on=.(cycle = next_cycle, id=id)][,next_cycle:=NULL]
-    setnames(ph, c("cycle", "cell", "status", "i.cycle", "i.cell", "i.status"),
-             c("cycle", "cell", "status", "prev_cycle", "prev_cell", "prev_status"))
+    ph[, `:=` (prev_cycle = cycle - 1, next_cycle = cycle + 1)]
+    ph <- merge(ph, 
+                ph[,.(id, next_cycle, prev_cell = cell, prev_status = status)], 
+                by.x = c("id", "cycle"),
+                by.y = c("id", "next_cycle"),
+                all.x = TRUE)[,next_cycle := NULL]
     
     cat("ph ... ")
-    ph_departures <- ph %>% 
-      filter(prev_cell != cell) %>% 
-      group_by(prev_cell, status, cycle) %>% 
-      summarize(num = -n()) %>% 
-      mutate(x_type = "Dep") %>% 
-      ungroup() %>% 
-      rename(cell = prev_cell) %>% 
-      filter(!is.na(cycle))
+    ph_create <- ph[prev_cycle == -1, .(num = .N, x_type = "Create"), by = .(cell, status, cycle)]
+    cat("create ... ")
+    ph_departures <- ph[cell != prev_cell, .(num = -(.N), x_type = "Dep"), by = .(prev_cell, status, cycle)] %>% 
+      rename(cell = prev_cell)
     cat("dep ... ")
-    ph_arrivals <- ph %>% 
-      filter(prev_cell != cell) %>% 
-      group_by(cell, status, cycle) %>% 
-      summarize(num = n()) %>% 
-      ungroup() %>% 
-      mutate(x_type = "Arr") %>% 
-      filter(!is.na(cycle))
+    ph_arrivals <- ph[cell != prev_cell, .(num = .N, x_type = "Arr"), by = .(cell, status, cycle)]
     cat("arr ... ")
-    ph_stay <- ph %>% 
-      filter(prev_cell == cell) %>% 
-      group_by(cell, status, cycle) %>% 
-      summarize(num = n()) %>% 
-      ungroup() %>% 
-      mutate(x_type = "Stay")
-    cat("stay ... ")
-    ph_disease_from <- ph %>%
-      group_by(cell, status, cycle, prev_status) %>% 
-      summarize(num = n()) %>% 
-      ungroup() %>% 
+    ph_disease_from <- ph[status != prev_status & cell == prev_cell, .(num = -.N), by = .(cell, status, cycle, prev_status)] %>% 
       rename(x_type = status, status = prev_status)
-    cat("d_to ... ")
-    ph_disease_to <- ph_disease_from %>% 
-      mutate(num = num * -1) %>% 
-      rename(temp = x_type) %>% 
-      mutate(x_type = status) %>% 
-      mutate(status = temp) %>% 
-      select(-temp)
-    cat("d_from ... ")
-    rm(ph) # save memory ph can be huge
-    ccr <- rbind(ph_arrivals, ph_departures, ph_stay, ph_disease_from, ph_disease_to)
+    cat("status_from ... ")
+    ph_disease_to <- (ph_disease_from[
+      ,.(cell, cycle, num = -num, temp = x_type, x_type = status, status = x_type)][,temp:=NULL])
+    cat("status_to ... ")
     
-    x_type_levels <- c("Arr", "Dep", "Stay", levels(ccr$status))
+    rm(ph) # save memory ph can be huge
+
+    ccr <- rbind(ph_create, ph_arrivals, ph_departures, ph_disease_from, ph_disease_to)
+    x_type_levels <- c("Create", "Arr", "Dep", levels(ccr$status))
     ccr$x_type <- factor(ccr$x_type, levels = x_type_levels, ordered = TRUE)
+    
+    ccr_widened <- 
+      data.table(ccr %>% 
+                   pivot_wider(id_cols = c(cell, cycle, status), 
+                               names_prefix = "from_", 
+                               names_from = x_type, 
+                               values_from = num, 
+                               values_fn =  list(num = sum)) %>% 
+                   replace(is.na(.), 0) %>% 
+                   mutate(delta = rowSums(.[4:ncol(.)]))
+      )
+    cat("widen ... ")
+    
+    ccr_expanded <- merge(data.table(
+      expand.grid(cell = cells(m), 
+                  status = disease_status_factors(), 
+                  cycle = cycles(m))),
+      ccr_widened, 
+      by = c("cell", "cycle", "status"),
+      all.x = TRUE)
+    for(j in seq_along(ccr_expanded)){
+      set(ccr_expanded, i = which(is.na(ccr_expanded[[j]]) & is.numeric(ccr_expanded[[j]])), j = j, value = 0)
+    }
+    cat("expand ... ")
+    rm(ccr_widened)
+    
+    setkey(ccr_expanded, cell, status, cycle)
+    ccr_expanded[, pop := cumsum(delta), by = .(cell, status)]
+    
     cat("done\n")
-    ccr
+    ccr_expanded
   }
   
   cell_cycle_transitions <- function(scenario_dir) {
-    cat("   cell cycle transitions ... \n")
-    diseases <-
-      read_disease_log(scenario_dir) %>% rename(cell = current_cell)
-    cct <- diseases %>% group_by(cycle, cell, disease_status, .drop=TRUE) %>% 
-      summarize(disease_transitions = n()) %>% ungroup()
+    cat("   cell cycle transitions ... ")
+    diseases <- data.table(read_disease_log(scenario_dir))[,`:=` (cell = current_cell, current_cell = NULL)]
+    cct <- diseases[, disease_transitions := .N, by = c("cycle", "cell", "disease_status")]
     
     # a transition to "Well" status is recoded as a recovery
     cct$disease_status <-
       recode_factor(cct$disease_status, Well = "Recovered")
     cct$disease_status <-
       fct_relevel(cct$disease_status, "Recovered", after = 3)
-    
-    cct
+    cat("done\n")
+    cct    
   }
   
   cell_cycle_status <- function(s, wcs, rows, cols) {
-    cat("   cell cycle status ... \n")
+    cat("   cell cycle status ... ")
     ph <- load_scenario_data(s, "person_history")
-    ccs <- ph %>% group_by(cycle, cell, status) %>% summarize(cell_status_pop = n()) %>% 
-      ungroup()
+    # ccs <- ph[, cell_status_pop := .N, by = .(cycle, cell, status)]
+    ccs <- ph[, .(cell_status_pop = .N), by = .(cycle, cell, status)][
+      , cell_pop := sum(cell_status_pop), by = .(cycle, cell)][
+        , cell_status_pop_pct := if_else(cell_pop==0, 0, cell_status_pop / cell_pop)][
+          ,`:=` (row = cell %/% cols, col = cell %% cols)]
     rm(ph) # save memory ph can be huge
     
-    ccs <- wcs %>% left_join(ccs, by = c("cycle", "cell", "status")) %>% 
-      mutate(row = cell %/% cols, col = cell %% cols) %>% 
-      mutate(cell_status_pop = replace_na(cell_status_pop, 0)) %>% 
-      group_by(cycle, cell) %>% 
-      mutate(cell_pop = sum(cell_status_pop)) %>% 
-      group_by(status, add = TRUE) %>% 
-      mutate(cell_status_pop_pct = if_else(cell_pop==0, 0, cell_status_pop / cell_pop)) %>% 
-      ungroup()
     ccs$row <- factor(ccs$row, ordered = TRUE, levels = 0:(rows-1))
     ccs$col <- factor(ccs$col, ordered = TRUE, levels = 0:(cols-1))
     
+    cat("done\n")
     ccs
   }
   
   cell_cycle <- function(ccs) {
-    cat("   cell cycle ... \n")
-    ccs %>% group_by(cycle, cell, row, col) %>% 
-      summarize(cell_pop = sum(cell_status_pop)) %>% 
-      group_by(cycle) %>% 
-      mutate(cycle_pop = sum(cell_pop)) %>% 
-      group_by(cell, row, col, add = TRUE) %>% 
-      mutate(cell_pop_pct = cell_pop / cycle_pop) %>% 
-      ungroup()
+    cat("   cell cycle ... ")
+    # ccs %>% group_by(cycle, cell, row, col) %>% 
+    #   summarize(cell_pop = sum(cell_status_pop)) %>% 
+    #   group_by(cycle) %>% 
+    #   mutate(cycle_pop = sum(cell_pop)) %>% 
+    #   group_by(cell, row, col, .add = TRUE) %>% 
+    #   mutate(cell_pop_pct = cell_pop / cycle_pop) %>% 
+    #   ungroup()
+    cc <- ccs[, .(cell_pop = last(cell_pop)), by = .(cycle, cell, row, col)][
+      , cycle_pop := sum(cell_pop), by = .(cycle)][
+        , cell_pop_pct :=  cell_pop / cycle_pop]
+    
+    cat("done\n")
+    cc
   }
   
   cycle_status <- function(ccs) {
-    cat("   cycle status ... \n")
-    ccs %>% group_by(cycle, status) %>% 
-      summarize(status_pop = sum(cell_status_pop)) %>% ungroup()
+    cat("   cycle status ... ")
+    # ccs %>% group_by(cycle, status) %>% 
+    #   summarize(status_pop = sum(cell_status_pop)) %>% ungroup()
+    cc <- ccs[, .(status_pop = sum(cell_status_pop)), by = .(cycle, status)]
+    cat("done\n")
+    cc
   }
   
-  # main - loop models scenarios and save intermediate results
+  # main - loop models scenarios and save intermediate results ---------------
   source("../scripts/load_sim_data.R")
+  options(dplyr.summarise.inform = FALSE) # suppress stupid dplyr summarise msg
   model_dirs <- model_dir_list()
   for (m in model_dirs) {
     if (!rdata_up_to_date(m) || force) {
@@ -185,7 +197,7 @@ prepare_rdata <- function(model_root_dir, force = FALSE) {
         rm(ph) # save memory ph can be huge
         
         ccs <- cell_cycle_status(s, wcs, model_parms$world_parms$rows, model_parms$world_parms$cols)
-        ccr <- cell_cycle_reconciliation(s)
+        ccr <- cell_cycle_reconciliation(m, s)
         
         save_scenario_data(s, "cell_cycle_reconciliation", ccr)
         save_scenario_data(s, "cell_cycle_status", ccs)

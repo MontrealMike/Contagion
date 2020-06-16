@@ -41,8 +41,6 @@ fn main() {
         let person_log = data_management::PersonLog::new(&scenario_dir_name);
         let mut world = create_world(model_scenario);
 
-        world.seed_infection(0, 10); // infect 10 people
-
         // Loop around cycles
         // TODO #3 add timer
         print!("Running {} cycles", cycle_ceiling - 1);
@@ -56,7 +54,7 @@ fn main() {
         println!();
         print!("Logging scenario events ... ");
         io::stdout().flush().unwrap();
-        save_person_logs(&world.populace, &person_log);
+        save_person_logs(&world.cells, &person_log);
         println!("done");
         io::stdout().flush().unwrap();
     }
@@ -68,17 +66,20 @@ fn create_world(parms: world::WorldParms) -> world::Region {
         parms.cols,
         parms.people_count,
         1,
+        8,
         parms.sim_parms,
     )
 }
 
 // TODO #6 this whole person log thing is quite awkward - why can't it be created within this
 // function
-fn save_person_logs(populace: &Vec<world::Person>, person_log_file: &data_management::PersonLog) {
+fn save_person_logs(cells: &Vec<world::Cell>, person_log_file: &data_management::PersonLog) {
     // create a vector of vector of personal logs
-    let mut populace_log: Vec<&Vec<world::PersonLogEntry>> = Vec::with_capacity(populace.len());
-    for p in populace {
-        populace_log.push(&p.event_log);
+    let mut populace_log: Vec<&Vec<world::PersonLogEntry>> = Vec::new();
+    for c in cells {
+        for p in c.populace.values() {
+            populace_log.push(&p.event_log);
+        }
     }
     person_log_file.append(populace_log);
 }

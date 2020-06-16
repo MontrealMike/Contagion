@@ -118,15 +118,19 @@ scenario_comparison_tables <- function(model_dir) {
     mutate(transition_pct = transitions / parms$world_parms$population_size) %>% 
     mutate(transitions_fmt = format(transitions, big.mark = ",", nsmall = 0)) %>% 
     mutate(transition_pct_fmt = paste0(format(transition_pct * 100, nsmall=2), "%"))
+  scenario_status <- expand.grid(scenario = unique(scenario_summary$scenario),
+                                 disease_status = levels(scenario_summary$disease_status))
   scenario_table_abs <-
-    scenario_summary %>% arrange(scenario, disease_status) %>%
+    scenario_status %>% left_join(scenario_summary, by = c("scenario", "disease_status")) %>% 
+    arrange(scenario, disease_status) %>%
     pivot_wider(id_cols = scenario,
                 names_from = disease_status,
                 values_from = transitions_fmt) %>%
     mutate(!!sensitivity_var_type := parms$scenario_parms$scenario_values) %>%
     select(scenario,!!sensitivity_var_type, everything())
   scenario_table_pct <-
-    scenario_summary %>% arrange(scenario, disease_status) %>%
+    scenario_status %>% left_join(scenario_summary, by = c("scenario", "disease_status")) %>% 
+    arrange(scenario, disease_status) %>%
     pivot_wider(id_cols = scenario,
                 names_from = disease_status,
                 values_from = transition_pct_fmt) %>%
@@ -137,15 +141,33 @@ scenario_comparison_tables <- function(model_dir) {
 }
 
 population_reconciliation_table <- function(prt, cycle, cell = NULL){
-  if (!is.null(cell)) {
-    prt <- prt %>% filter(cell == !!cell & cycle == !!cycle)
+  
+  # select and summarize data
+  prt <- if (!is.null(cell)) {
+    prt %>% 
+      filter(cell == !!cell & cycle == !!cycle) %>% 
+      select(-cell, -cycle)
+    
   } else {
-    prt <- prt %>% filter(cycle == !!cycle)
+    prt %>% 
+      filter(cycle == !!cycle) %>% 
+      select(-cell, -cycle) %>% 
+      group_by(status) %>% 
+      summarize_all(funs(sum))
   }
+  
+  # turn rows into columns and tidy up names
   prt <- prt %>% 
-    select(-cycle, -cell) %>% 
-    group_by(status, x_type) %>% 
-    summarize(num = sum(num))
+    mutate(`Start pop` = pop - delta) %>% 
+    rename(`Net change` = delta, `End pop` = pop) %>% 
+    pivot_longer(cols = c(`Start pop`, starts_with("from_"), `Net change`, `End pop`), values_to = "num") %>% 
+    pivot_wider(id_cols = name, names_from = status, values_from = num) %>% 
+    mutate(name = str_replace(name, "from_", ""))
+  
+  # add a total column
+  prt <- prt %>% mutate(Total = rowSums(.[2:ncol(.)])) %>% 
+    mutate(across(is.numeric, comma, accuracy = 1))
+  return(prt)
   
   # turn into table with exactly 8 rows and 5 columns
   status_levels <- levels(prt$status)
@@ -156,13 +178,20 @@ population_reconciliation_table <- function(prt, cycle, cell = NULL){
     mutate(num=replace_na(num, 0)) %>% 
     pivot_wider(id_cols = x_type, names_from = status, values_from = num) %>% 
     select(-x_type)
-  
+
+    
   # add summary rows and columns - our final matrix will have 10 rows
   prt_init <- as.matrix(prt)
   prt_full <- matrix(0, ncol = 5, nrow = 10)
   new_rows <- c(1,4,10)
-  prt_full[-new_rows,] <- prt_init[-3,]          # copy in all rows except Stays
-  prt_full[10,] <- colSums(prt_init) - prt_init[2,]   # End count is sum of all rows except departures
+  # prt_full[-new_rows,] <- prt_init[-3,]          # copy in all rows except Stays
+  # prt_full[10,] <- colSums(prt_init) - prt_init[2,]   # End count is sum of all rows except departures
+  # prt_full[4,] <- prt_full[10,] - colSums(prt_init[4:8,])  # Sub total is end count - disease x_types
+  # prt_full[1,] <- prt_full[4,] - colSums(prt_init[1:2,])   # Start count is sub total - net arrivals & departures
+  # prt_full <- cbind(prt_full, rowSums(prt_full))
+  
+  prt_full[-new_rows,] <- prt_init[-3,]                    # copy in all rows except Stays
+  prt_full[10,] <- colSums(prt_init)                       # End count is sum of all rows except departures
   prt_full[4,] <- prt_full[10,] - colSums(prt_init[4:8,])  # Sub total is end count - disease x_types
   prt_full[1,] <- prt_full[4,] - colSums(prt_init[1:2,])   # Start count is sub total - net arrivals & departures
   prt_full <- cbind(prt_full, rowSums(prt_full))
@@ -185,7 +214,7 @@ population_reconciliation_table <- function(prt, cycle, cell = NULL){
 
 # Tests  -------------------------------------------------------
 test_population_reconciliation_table <- function(prt=NULL, m = 1, s = 1, 
-                                                 cycle = 0, cell = 0) {
+                                                 cycle = 1, cell = 0) {
   if (is.null(prt)) {
     model_dir <- model_dir_list()[[m]]
     scenario_dir <- scenario_dir_list(model_dir)[[s]]

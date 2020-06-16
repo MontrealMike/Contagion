@@ -5,18 +5,19 @@
 # libraries and includes --------------------------------------------------------------
 library(yaml)
 library(tidyverse)
+library(data.table)
 
 # directory structure ----------------------------------------------------------------------
 # this is just a convenience for the devlopper --- it should NEVER be called
 # by the program code
 shiny_directory <- function() {
-  setwd("/home/michael/GoogleDrive/Documents/Personal/Development/vs/contagion/R/shiny")
+  setwd("/home/michael/GoogleDrive/Documents/Personal/Development/Contagion/R/shiny")
   print(getwd())
 }
 
 # Where to find models
 model_root_dir <- function() {
-  "/home/michael/GoogleDrive/Documents/Personal/Development/vs/contagion/data/Model Runs"
+  "/home/michael/GoogleDrive/Documents/Personal/Development/Contagion/data/Model Runs V2"
 }
 
 # TODO filter out non valid items and
@@ -45,10 +46,10 @@ model_run_date_time <- function(model_dir) {
 
 # get model parameter data  -----------------------------------------------
 cycles <- function(model_dir) {
-  seq(0, read_model_parameters()$cycles-1)    
+  seq(0, read_model_parameters(model_dir)$cycles-1)    
 }
 people <- function(model_dir) {
-  seq(0, read_model_parameters()$world_parms$population-1)    
+  seq(0, read_model_parameters(model_dir)$world_parms$population-1)    
 }
 cells <- function(model_dir) {
   p <- read_model_parameters(model_dir)
@@ -59,7 +60,6 @@ disease_status_factors <- function() {
 }
 
 # read log files ---------------------------------------------------------
-
 read_create_log <- function(scenario_dir) {
   create_log <-
     read.csv(paste0(scenario_dir, "/person_log_create.csv"))
@@ -88,7 +88,6 @@ read_disease_log <- function(scenario_dir) {
 
 # intermediate data -------------------------------------------------------------------------
 # create the directory if need be
-
 model_rdata_directory <- function(model_dir) {
   dir_name <- paste0(model_dir, "/rdata")
   ifelse(!dir.exists(dir_name), dir.create(dir_name), FALSE)
@@ -98,7 +97,9 @@ model_rdata_directory <- function(model_dir) {
 model_data_file_names <- function() {
   list(
     cell_cycle_transitions = "cell_cycle_transitions",
-    cycle_status = "cycle_status"
+    cycle_status = "cycle_status",
+    cct = "cell_cycle_transitions",
+    cs = "cycle_status"
   )
 }
 
@@ -121,12 +122,19 @@ scenario_rdata_directory <- function(scenario_dir) {
 }
 
 scenario_data_file_names <- function(){
-  list(person_history = "person_history",
-       cell_cycle_status = "cell_cycle_status",
-       cell_cycle = "cell_cycle",
-       cycle_status = "cycle_status",
-       cell_cycle_transitions = "cell_cycle_transitions",
-       cell_cycle_reconciliation = "cell_cycle_reconciliation"
+  list(
+    person_history = "person_history",
+    cell_cycle_status = "cell_cycle_status",
+    cell_cycle = "cell_cycle",
+    cycle_status = "cycle_status",
+    cell_cycle_transitions = "cell_cycle_transitions",
+    cell_cycle_reconciliation = "cell_cycle_reconciliation",
+    ph = "person_history",
+    ccs = "cell_cycle_status",
+    cc = "cell_cycle",
+    cs = "cycle_status",
+    cct = "cell_cycle_transitions",
+    ccr = "cell_cycle_reconciliation"
   )
 }
 
@@ -151,17 +159,22 @@ rdata_up_to_date <- function(model_dir) {
 }
 
 # tests -------------------------------------------------------------------
-test_get_model_parameters <- function() {
-  m = model_dir_list()[[1]]
+test_data <- function() {
+  m <- model_dir_list()[1]
+  s <- scenario_dir_list(m)[[1]]
+  return(list(model = m, scenario = t))
+}
+
+test_get_model_parameters <- function(m = test_data()$model) {
   read_model_parameters(m)
 }
 
-test_load_scenario_data <- function(data_file = "cell_cycle_transitions", 
-                                    model_num = 1, 
-                                    scenario_num = 1) {
-  m = model_dir_list()[[model_num]]
-  s = scenario_dir_list(m)[[scenario_num]]
-  load_scenario_data(s, data_file)
+test_load_scenario_data <- function(data_file_code = "cell_cycle_transitions", 
+                                    m = 1, 
+                                    s = 1) {
+  m = model_dir_list()[[m]]
+  s = scenario_dir_list(m)[[s]]
+  data.table(load_scenario_data(s, data_file_code))
 }
 
 test_read_disease_log <- function() {

@@ -15,15 +15,16 @@ use rand::prelude::*;
 use rand::seq::SliceRandom;
 use rand_distr::{Beta, Distribution, Pert};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write};
 
 // Region ---------------------------------------------------------------------------------------------------
 #[derive(Debug)]
-pub struct Region<'a> {
+pub struct Region {
     // pub populace: Vec<Person>,
-    cells: Vec<Cell<'a>>,
-    cell_home_population: Vec<usize>,
+    pub cells: Vec<Cell>,
+    // cell_home_population: Vec<usize>,
     // cell_virality: Vec<f64>,
     od_attraction_matrix: Vec<Vec<f64>>,
     population_count: usize,
@@ -33,7 +34,7 @@ pub struct Region<'a> {
     sim_parms: SimParms,
 }
 
-impl<'a> Region<'a> {
+impl Region {
     pub fn new(
         row_count: usize,
         col_count: usize,
@@ -41,7 +42,7 @@ impl<'a> Region<'a> {
         empty_pop_pull_factor: usize,
         initial_infected_count: usize,
         sim_parms: SimParms,
-    ) -> Region<'a> {
+    ) -> Region {
         // creating the cells
         let cell_count = row_count * col_count;
         let mut cells: Vec<Cell> = Vec::with_capacity(cell_count);
@@ -66,7 +67,7 @@ impl<'a> Region<'a> {
         // randomly pick those who are infected at the outset
         let mut rng = rand::thread_rng();
         let person_ids: Vec<usize> = (0..people_count).collect();
-        let infectee_ids: Vec<usize> = person_ids
+        let mut infectee_ids: Vec<usize> = person_ids
             .choose_multiple(&mut rng, initial_infected_count)
             .cloned()
             .collect();
@@ -82,10 +83,11 @@ impl<'a> Region<'a> {
             for neighbour in &neighbourhoods[cell_choice] {
                 neighbourhood_pops[*neighbour] += 1;
             }
-            let new_person = Person::new(p, &sim_parms, cell_choice);
+            let mut new_person = Person::new(p, &sim_parms, cell_choice);
             if infectee_ids.len() > 0 {
                 if p == infectee_ids[0] {
                     new_person.update_disease_status(0, &sim_parms);
+                    infectee_ids.remove(0);
                     print!("i")
                 }
             }
@@ -140,45 +142,35 @@ impl<'a> Region<'a> {
         }
     }
 
-    // infection in a count number of randomly selected people
-    // pub fn seed_infection(&mut self, cycle: usize, count: usize) {
-    //     let mut rng = rand::thread_rng();
-    //     let person_ids: Vec<usize> = (0..self.population_count).collect();
-    //     let infectee_ids = person_ids.choose_multiple(&mut rng, count).cloned();
-
-    //     print!("     seeding the infection ... ");
-    //     io::stdout().flush().unwrap();
-    //     let person_count: usize = 0;
-    //     for person_index in infectee_ids {
-    //         self.populace[person_index].update_disease_status(cycle, &self.sim_parms);
-    //     }
-    //     println!(" {} people infected", count);
-    // }
-
     // Moves people from one cell to another based on their current location,
     // their home cell, their mobility factor
     // Only non-hospitalized alive people move
     // Cell virality levels are updated to reflect the current population
     // (TODO) #1 add a dampening measures in on symptomatic persons
     pub fn move_people(&mut self, cycle: usize) {
-        let mut cell_current_pop: Vec<usize> = vec![0; self.cell_count];
-        let mut cell_tot_virality: Vec<f64> = vec![0.0; self.cell_count];
+        // let mut cell_current_pop: Vec<usize> = vec![0; self.cell_count];
+        // let mut cell_tot_virality: Vec<f64> = vec![0.0; self.cell_count];
         let mut rng = rand::thread_rng();
 
-        // we have an arrivals and departures row for each cell
-        for cell in self.cells {
-            for person in cell.populace.iter_mut() {
-                // more mobile people at home tend to move away more
-                // less mobile people away tend to return home more
+        // create a list of moves (id, from cell, to cell)
+        let mut moves: Vec<(usize, usize, usize)> = Vec::new();
+        for (cell_index, cell) in self.cells.iter().enumerate() {
+            for (id, person) in cell.populace.iter() {
+                // get a random number between 0 and 1
+                let my_rand = rng.gen::<f64>();
+
+                // hospitalized and dead people don't move
                 let will_move = if person.disease_status == DiseaseStatus::Hospitalized
                     || person.disease_status == DiseaseStatus::Dead
                 {
                     false
                 } else {
+                    // more mobile people at home tend to move away more
+                    // less mobile people away tend to return home more
                     if person.current_cell == person.home_cell {
-                        person.mobility > rng.gen::<f64>()
+                        person.mobility > my_rand
                     } else {
-                        person.mobility <= rng.gen::<f64>()
+                        person.mobility <= my_rand
                     }
                 };
 
@@ -189,42 +181,36 @@ impl<'a> Region<'a> {
                     )
                     .unwrap();
                     let to_cell_index = wi.sample(&mut rng);
-                    person.relocate(cycle, to_cell_index);
-                }
-
-                // cumulate virality levels
-                cell_current_pop[person.current_cell] += 1;
-                if person.disease_status == DiseaseStatus::Infected
-                    || person.disease_status == DiseaseStatus::Symptomatic
-                {
-                    cell_tot_virality[person.current_cell] +=
-                        person.exposure * (1.0 - person.immunity);
+                    moves.push((*id, cell_index, to_cell_index))
                 }
             }
-            // update cell virality
         }
 
-        // function yields virality score between 0 and 1.
-        // This is a diminishing returns function.
-        for cell_index in 0..self.cell_count {
-            self.cell_virality[cell_index] = 1.0 - 1.0 / (cell_tot_virality[cell_index] + 1.0);
+        // process the moves
+        for (id, from_index, to_index) in moves {
+            let mut p = self.cells[from_index].remove_person(id);
+            p.relocate(cycle, to_index);
+            self.cells[to_index].add_person(p);
         }
+
+        // update the virality of all cells
+        self.cells.iter_mut().for_each(|c| c.update_virality());
     }
     pub fn update_disease_stati(&mut self, cycle: usize) {
         let mut rng = rand::thread_rng();
-        for person in self.populace.iter_mut() {
-            // determine new status
-            let random_number = rng.gen::<f64>();
-            if person.disease_status == DiseaseStatus::Well {
-                let prob_infection = person.exposure
-                    * self.cell_virality[person.current_cell]
-                    * (1.0 - person.immunity);
-                person.immunity *= 1.0 - self.sim_parms.immunity_loss.sample(&mut rng);
-                if random_number <= prob_infection {
-                    person.update_disease_status(cycle, &self.sim_parms);
+        for c in self.cells.iter_mut() {
+            for (_id, p) in c.populace.iter_mut() {
+                // determine new status
+                let random_number = rng.gen::<f64>();
+                if p.disease_status == DiseaseStatus::Well {
+                    let prob_infection = p.exposure * c.virality * (1.0 - p.immunity);
+                    p.immunity *= 1.0 - self.sim_parms.immunity_loss.sample(&mut rng);
+                    if random_number <= prob_infection {
+                        p.update_disease_status(cycle, &self.sim_parms);
+                    }
+                } else if cycle == p.next_status_change {
+                    p.update_disease_status(cycle, &self.sim_parms);
                 }
-            } else if cycle == person.next_status_change {
-                person.update_disease_status(cycle, &self.sim_parms);
             }
         }
     }
@@ -232,30 +218,27 @@ impl<'a> Region<'a> {
 
 // cell
 #[derive(Debug)]
-struct Cell<'a> {
+pub struct Cell {
     id: usize,
-    populace: Vec<Person>,
-    // neighbours: Vec<Cell<'a>>,
+    pub populace: HashMap<usize, Person>,
     resident_pop: usize,     // total residents  including away
     at_home_pop: usize,      // residents currently at home
     visitor_pop: usize,      // visitors
     testing_capacity: usize, // people per cycle
+    virality: f64,           // 0-1 value indicating odds of getting infected
 }
 
-impl<'a> Cell<'a> {
-    fn new(id: usize) -> Cell<'a> {
-        let populace: Vec<Person> = Vec::new();
-        // let neighbours: Vec<Cell> = Vec::new();
-        // let at_home_pop = 0;
-        // let testing_capacity = 0;
+impl Cell {
+    fn new(id: usize) -> Cell {
+        let populace: HashMap<usize, Person> = HashMap::new();
         Cell {
             id: id,
             populace: populace,
             resident_pop: 0,
             at_home_pop: 0,
             visitor_pop: 0,
-            // neighbours: neighbours,
             testing_capacity: 0,
+            virality: 0.0,
         }
     }
 
@@ -276,24 +259,38 @@ impl<'a> Cell<'a> {
     }
 
     // use this only to initialize cell pop
-    fn add_resident(&self, p: person) {
-        assert_eq!(self.id, person.home_cell);
+    fn add_resident(&mut self, p: Person) {
+        assert_eq!(self.id, p.home_cell);
         self.resident_pop += 1;
         self.add_person(p);
     }
-    fn add_person(&self, p: Person) {
+    fn add_person(&mut self, p: Person) {
         match p.home_cell == self.id {
             true => self.at_home_pop += 1,
             false => self.visitor_pop += 1,
         }
-        self.populace.push(p);
+        self.populace.insert(p.id, p);
     }
-    fn remove_person(&self, index: usize) -> Person {
+    fn remove_person(&mut self, id: usize) -> Person {
+        // let p = self.populace.get(&id).expect("Trying to remove invalid person. Id: {}", id);
+        let p = self.populace.get(&id).unwrap();
         match p.home_cell == self.id {
             true => self.at_home_pop -= 1,
             false => self.visitor_pop -= 1,
         }
-        self.populace.remove(index)
+        self.populace.remove(&id).unwrap()
+    }
+
+    fn update_virality(&mut self) {
+        let mut tot_virality: f64 = 0.0;
+        for p in self.populace.values() {
+            if p.disease_status == DiseaseStatus::Infected
+                || p.disease_status == DiseaseStatus::Symptomatic
+            {
+                tot_virality += p.exposure * (1.0 - p.immunity);
+            }
+        }
+        self.virality = 1.0 - 1.0 / (tot_virality + 1.0);
     }
 }
 
@@ -529,7 +526,7 @@ impl Person {
     //      result may be accurate or
     //      false positive or
     //      false negative
-    fn infection_test(&mut self, cycle: usize, parms: &SimParms) {
+    fn infection_test(&mut self, cycle: usize, _parms: &SimParms) {
         // naive version - perfect test TODO #4 - put in errors
         let is_infected: bool = if self.disease_status == DiseaseStatus::Well {
             true
